@@ -7,6 +7,7 @@ const AWS = require('aws-sdk');
 const path = require('path');
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
@@ -563,22 +564,20 @@ app.post('/api/backup', async (req, res) => {
   }
 });
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
+// Health check (handle both with and without trailing slash, no redirects)
+function sendHealth(res) {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    status: 'OK',
     timestamp: new Date().toISOString(),
     environment: NODE_ENV,
     version: process.env.APP_VERSION || '1.0.0',
     database: 'PostgreSQL',
     backup: 'S3'
   });
-});
-
-// Handle trailing slash only → redirect to canonical path
-app.get('/api/health/', (req, res) => {
-  res.redirect('/api/health');
-});
+}
+app.get('/api/health', (req, res) => sendHealth(res));
+app.get('/api/health/', (req, res) => sendHealth(res));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
