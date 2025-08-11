@@ -1135,7 +1135,7 @@ app.post('/api/licenses/migrate-s3', async (req, res) => {
     // Read licenses from S3
     const s3Params = {
       Bucket: process.env.S3_BUCKET_NAME || 'myfideanlicense',
-      Key: 'licenses.json'
+      Key: 'fdscriptlicense.json'
     };
     
     let s3Licenses = [];
@@ -1180,6 +1180,15 @@ app.post('/api/licenses/migrate-s3', async (req, res) => {
           expiryDate.setFullYear(expiryDate.getFullYear() + 1); // Default 1 year
         }
         
+        // Determine status from isActive field
+        const status = s3License.isActive === false ? 'inactive' : 'active';
+        
+        // Determine plan from the S3 data
+        let plan = 'standard';
+        if (s3License.plan) {
+          plan = s3License.plan.toLowerCase();
+        }
+        
         // Insert license into database
         await client.query(`
           INSERT INTO licenses (
@@ -1195,8 +1204,8 @@ app.post('/api/licenses/migrate-s3', async (req, res) => {
         `, [
           s3License.licenseKey,
           s3License.email || s3License.customerEmail || 'migrated@fiddyscript.com',
-          s3License.plan || 'standard',
-          s3License.status || 'active',
+          plan,
+          status,
           s3License.maxSystems || s3License.maxDevices || 2,
           s3License.seats || 1,
           s3License.maxDevicesPerUser || 2,
@@ -1207,6 +1216,21 @@ app.post('/api/licenses/migrate-s3', async (req, res) => {
         if (s3License.systems && Array.isArray(s3License.systems)) {
           for (const system of s3License.systems) {
             try {
+              // Determine device status from isActive field
+              const deviceStatus = system.isActive === false ? 'revoked' : 'active';
+              
+              // Extract platform from user agent if available
+              let platform = 'unknown';
+              if (system.fingerprint && system.fingerprint.userAgent) {
+                const userAgent = system.fingerprint.userAgent.toLowerCase();
+                if (userAgent.includes('windows')) platform = 'windows';
+                else if (userAgent.includes('mac')) platform = 'mac';
+                else if (userAgent.includes('linux')) platform = 'linux';
+                else if (userAgent.includes('android')) platform = 'android';
+                else if (userAgent.includes('ios')) platform = 'ios';
+                else if (userAgent.includes('web')) platform = 'web';
+              }
+              
               await client.query(`
                 INSERT INTO license_devices (
                   license_key, 
@@ -1223,11 +1247,11 @@ app.post('/api/licenses/migrate-s3', async (req, res) => {
                 s3License.licenseKey,
                 s3License.email || s3License.customerEmail,
                 system.systemId,
-                system.platform || 'unknown',
-                system.deviceName || 'Migrated Device',
-                system.status || 'active',
-                system.firstActivatedAt || new Date(),
-                system.lastSeenAt || new Date()
+                platform,
+                `Migrated Device (${system.systemId})`,
+                deviceStatus,
+                system.activatedAt || system.firstActivatedAt || new Date(),
+                system.lastSeen || system.lastSeenAt || new Date()
               ]);
             } catch (deviceError) {
               console.error('Error migrating device:', deviceError);
@@ -1278,7 +1302,7 @@ app.get('/api/licenses/migration-status', async (req, res) => {
     try {
       const s3Params = {
         Bucket: process.env.S3_BUCKET_NAME || 'myfideanlicense',
-        Key: 'licenses.json'
+        Key: 'fdscriptlicense.json'
       };
       const s3Data = await s3.getObject(s3Params).promise();
       const licensesData = JSON.parse(s3Data.Body.toString());
