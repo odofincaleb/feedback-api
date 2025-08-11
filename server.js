@@ -996,6 +996,11 @@ app.put('/api/licenses/:licenseKey', async (req, res) => {
     const updateValues = [];
     let paramCount = 1;
     
+    if (customerName !== undefined) {
+      updateFields.push(`customer_name = $${paramCount++}`);
+      updateValues.push(customerName);
+    }
+    
     if (customerEmail !== undefined) {
       updateFields.push(`email = $${paramCount++}`);
       updateValues.push(customerEmail);
