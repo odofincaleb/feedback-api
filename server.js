@@ -1127,6 +1127,180 @@ app.get('/api/licenses/:licenseKey/devices', async (req, res) => {
   }
 });
 
+// Migrate S3 licenses to database (one-time operation)
+app.post('/api/licenses/migrate-s3', async (req, res) => {
+  try {
+    const client = await db.connect();
+    
+    // Read licenses from S3
+    const s3Params = {
+      Bucket: process.env.S3_BUCKET_NAME || 'myfideanlicense',
+      Key: 'licenses.json'
+    };
+    
+    let s3Licenses = [];
+    try {
+      const s3Data = await s3.getObject(s3Params).promise();
+      const licensesData = JSON.parse(s3Data.Body.toString());
+      s3Licenses = licensesData.licenses || [];
+    } catch (s3Error) {
+      console.log('No existing S3 licenses found or error reading S3:', s3Error.message);
+      return res.json({ 
+        success: true, 
+        message: 'No S3 licenses found to migrate',
+        migrated: 0,
+        skipped: 0
+      });
+    }
+    
+    let migrated = 0;
+    let skipped = 0;
+    const errors = [];
+    
+    for (const s3License of s3Licenses) {
+      try {
+        // Check if license already exists in database
+        const existing = await client.query(
+          'SELECT license_key FROM licenses WHERE license_key = $1',
+          [s3License.licenseKey]
+        );
+        
+        if (existing.rows.length > 0) {
+          skipped++;
+          continue; // Skip if already exists
+        }
+        
+        // Parse expiry date
+        let expiryDate = new Date();
+        if (s3License.expiryDate) {
+          expiryDate = new Date(s3License.expiryDate);
+        } else if (s3License.duration) {
+          expiryDate.setDate(expiryDate.getDate() + parseInt(s3License.duration));
+        } else {
+          expiryDate.setFullYear(expiryDate.getFullYear() + 1); // Default 1 year
+        }
+        
+        // Insert license into database
+        await client.query(`
+          INSERT INTO licenses (
+            license_key, 
+            email, 
+            plan, 
+            status, 
+            max_devices, 
+            seats, 
+            max_devices_per_user, 
+            expiry_date
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `, [
+          s3License.licenseKey,
+          s3License.email || s3License.customerEmail || 'migrated@fiddyscript.com',
+          s3License.plan || 'standard',
+          s3License.status || 'active',
+          s3License.maxSystems || s3License.maxDevices || 2,
+          s3License.seats || 1,
+          s3License.maxDevicesPerUser || 2,
+          expiryDate
+        ]);
+        
+        // Migrate devices if they exist
+        if (s3License.systems && Array.isArray(s3License.systems)) {
+          for (const system of s3License.systems) {
+            try {
+              await client.query(`
+                INSERT INTO license_devices (
+                  license_key, 
+                  user_email, 
+                  device_id, 
+                  platform, 
+                  device_name, 
+                  status,
+                  first_activated_at,
+                  last_seen_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (license_key, device_id) DO NOTHING
+              `, [
+                s3License.licenseKey,
+                s3License.email || s3License.customerEmail,
+                system.systemId,
+                system.platform || 'unknown',
+                system.deviceName || 'Migrated Device',
+                system.status || 'active',
+                system.firstActivatedAt || new Date(),
+                system.lastSeenAt || new Date()
+              ]);
+            } catch (deviceError) {
+              console.error('Error migrating device:', deviceError);
+            }
+          }
+        }
+        
+        migrated++;
+        
+      } catch (licenseError) {
+        console.error('Error migrating license:', s3License.licenseKey, licenseError);
+        errors.push({
+          licenseKey: s3License.licenseKey,
+          error: licenseError.message
+        });
+      }
+    }
+    
+    client.release();
+    
+    res.json({
+      success: true,
+      message: `Migration completed: ${migrated} licenses migrated, ${skipped} skipped`,
+      migrated,
+      skipped,
+      errors: errors.length > 0 ? errors : undefined
+    });
+    
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({ 
+      error: 'Migration failed', 
+      details: error.message 
+    });
+  }
+});
+
+// Get migration status
+app.get('/api/licenses/migration-status', async (req, res) => {
+  try {
+    const client = await db.connect();
+    
+    // Count database licenses
+    const dbCount = await client.query('SELECT COUNT(*) as count FROM licenses');
+    
+    // Try to count S3 licenses
+    let s3Count = 0;
+    try {
+      const s3Params = {
+        Bucket: process.env.S3_BUCKET_NAME || 'myfideanlicense',
+        Key: 'licenses.json'
+      };
+      const s3Data = await s3.getObject(s3Params).promise();
+      const licensesData = JSON.parse(s3Data.Body.toString());
+      s3Count = (licensesData.licenses || []).length;
+    } catch (s3Error) {
+      // S3 file doesn't exist or can't be read
+    }
+    
+    client.release();
+    
+    res.json({
+      databaseLicenses: dbCount.rows[0].count,
+      s3Licenses: s3Count,
+      migrationNeeded: s3Count > 0
+    });
+    
+  } catch (error) {
+    console.error('Migration status error:', error);
+    res.status(500).json({ error: 'Failed to get migration status' });
+  }
+});
+
 // Health check (handle both with and without trailing slash, no redirects)
 function sendHealth(res) {
   res.set('Cache-Control', 'no-store');
