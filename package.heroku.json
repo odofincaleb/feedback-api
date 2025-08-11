@@ -1,0 +1,45 @@
+{
+  "name": "feedback-api-heroku",
+  "version": "1.0.0",
+  "description": "Production Feedback API Server with S3 Backups",
+  "main": "server.heroku.js",
+  "scripts": {
+    "start": "NODE_ENV=production node server.heroku.js",
+    "dev": "NODE_ENV=development node server.js",
+    "test": "jest",
+    "lint": "eslint .",
+    "deploy": "npm run lint && npm test && npm start",
+    "backup": "curl -X POST https://your-app.herokuapp.com/api/backup"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
+    "pg": "^8.11.3",
+    "aws-sdk": "^2.1490.0",
+    "compression": "^1.7.4",
+    "morgan": "^1.10.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^8.55.0",
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "keywords": [
+    "feedback",
+    "api",
+    "express",
+    "postgresql",
+    "s3",
+    "heroku"
+  ],
+  "author": "Fiddyscript Team",
+  "license": "MIT"
+}
+

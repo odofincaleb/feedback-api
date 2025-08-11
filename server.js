@@ -429,6 +429,34 @@ app.post('/api/licenses/heartbeat', async (req, res) => {
   }
 });
 
+// List all licenses
+app.get('/api/licenses', async (req, res) => {
+  const client = await db.connect();
+  try {
+    const licRows = await client.query(`
+      SELECT 
+        license_key, 
+        email, 
+        plan, 
+        status, 
+        max_devices, 
+        seats, 
+        max_devices_per_user, 
+        expiry_date,
+        created_at,
+        updated_at
+      FROM licenses 
+      ORDER BY created_at DESC
+    `);
+    res.json(licRows.rows);
+  } catch (e) {
+    console.error('List licenses error:', e);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    client.release();
+  }
+});
+
 // Status
 app.get('/api/licenses/status', async (req, res) => {
   const { licenseKey, deviceId } = req.query;
@@ -512,8 +540,43 @@ app.get('/api/licenses/users', async (req, res) => {
   if (!licenseKey) return res.status(400).json({ error: 'licenseKey is required' });
   const client = await db.connect();
   try {
-    const { rows } = await client.query(`SELECT user_email, role, max_devices, revoked_at FROM license_users WHERE license_key=$1`, [licenseKey]);
-    res.json(rows);
+    const { rows } = await client.query(`
+      SELECT 
+        lu.user_email, 
+        lu.role, 
+        lu.max_devices, 
+        lu.created_at,
+        lu.revoked_at,
+        COUNT(ld.device_id) as device_count
+      FROM license_users lu
+      LEFT JOIN license_devices ld ON lu.license_key = ld.license_key AND lu.user_email = ld.user_email AND ld.status = 'active'
+      WHERE lu.license_key = $1
+      GROUP BY lu.user_email, lu.role, lu.max_devices, lu.created_at, lu.revoked_at
+      ORDER BY lu.created_at DESC
+    `, [licenseKey]);
+    
+    // Get devices for each user
+    const usersWithDevices = await Promise.all(rows.map(async (user) => {
+      const deviceRows = await client.query(`
+        SELECT 
+          device_id,
+          platform,
+          device_name,
+          first_activated_at,
+          last_seen_at,
+          status
+        FROM license_devices 
+        WHERE license_key = $1 AND user_email = $2
+        ORDER BY last_seen_at DESC
+      `, [licenseKey, user.user_email]);
+      
+      return {
+        ...user,
+        devices: deviceRows.rows
+      };
+    }));
+    
+    res.json(usersWithDevices);
   } catch (e) {
     console.error('Users list error:', e);
     res.status(500).json({ error: 'internal_error' });
