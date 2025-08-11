@@ -77,6 +77,7 @@ const createTable = async () => {
       CREATE TABLE IF NOT EXISTS licenses (
         license_key VARCHAR(64) PRIMARY KEY,
         email VARCHAR(255),
+        customer_name VARCHAR(255),
         plan VARCHAR(50) DEFAULT 'standard',
         status VARCHAR(32) DEFAULT 'active',
         max_devices INTEGER DEFAULT 2,
@@ -88,6 +89,7 @@ const createTable = async () => {
       )
     `);
     // Ensure new columns exist for older deployments
+    await client.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255)`);
     await client.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS seats INTEGER DEFAULT 1`);
     await client.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS max_devices_per_user INTEGER DEFAULT 2`);
     // License devices table
@@ -419,6 +421,11 @@ const checkUserPermission = (requiredRole = 'member') => {
 };
 
 // Create new license (for License Manager) - MUST come before /api/licenses/activate
+// License Plans:
+// - basic: Essential features for individuals (1-3 devices, basic support)
+// - standard: Professional features for small teams (3-10 devices, email support)
+// - premium: Advanced features for growing businesses (10-50 devices, priority support)
+// - enterprise: Full features for large organizations (50+ devices, dedicated support)
 app.post('/api/licenses', async (req, res) => {
   const { customerName, customerEmail, licenseDuration, maxSystems, plan = 'standard' } = req.body || {};
   
@@ -455,10 +462,10 @@ app.post('/api/licenses', async (req, res) => {
     
     // Insert license
     const result = await client.query(`
-      INSERT INTO licenses (license_key, email, plan, status, max_devices, seats, max_devices_per_user, expiry_date)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO licenses (license_key, email, customer_name, plan, status, max_devices, seats, max_devices_per_user, expiry_date)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
-    `, [licenseKey, customerEmail, plan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
+    `, [licenseKey, customerEmail, customerName, plan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
     
     const newLicense = result.rows[0];
     
@@ -466,7 +473,7 @@ app.post('/api/licenses', async (req, res) => {
       success: true,
       license: {
         licenseKey: newLicense.license_key,
-        customerName: customerName || customerEmail,
+        customerName: newLicense.customer_name || customerName || customerEmail,
         customerEmail: newLicense.email,
         plan: newLicense.plan,
         status: newLicense.status,
@@ -601,6 +608,7 @@ app.get('/api/licenses', async (req, res) => {
       SELECT 
         license_key, 
         email, 
+        customer_name,
         plan, 
         status, 
         max_devices, 
@@ -635,6 +643,7 @@ app.get('/api/licenses/status', async (req, res) => {
     const result = {
       licenseKey: license.license_key,
       email: license.email,
+      customerName: license.customer_name,
       plan: license.plan,
       status: license.status,
       maxDevices: license.max_devices,
