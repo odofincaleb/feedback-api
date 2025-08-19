@@ -741,6 +741,80 @@ app.delete('/api/licenses/:licenseKey', async (req, res) => {
   }
 });
 
+// PUT license endpoint (for updating license details)
+app.put('/api/licenses/:licenseKey', async (req, res) => {
+  const { licenseKey } = req.params;
+  const updateData = req.body;
+  
+  if (!licenseKey) {
+    return res.status(400).json({ error: 'License key is required' });
+  }
+
+  if (!updateData || Object.keys(updateData).length === 0) {
+    return res.status(400).json({ error: 'Update data is required' });
+  }
+
+  const client = await db.connect();
+  try {
+    // First check if license exists
+    const licenseCheck = await client.query(
+      'SELECT license_key FROM licenses WHERE license_key = $1',
+      [licenseKey]
+    );
+
+    if (licenseCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'License not found' });
+    }
+
+    // Build dynamic update query based on provided fields
+    const allowedFields = [
+      'email', 'plan', 'status', 'max_devices', 'seats', 
+      'max_devices_per_user', 'expiry_date', 'customer_name'
+    ];
+    
+    const updateFields = [];
+    const updateValues = [];
+    let paramIndex = 1;
+
+    for (const [key, value] of Object.entries(updateData)) {
+      if (allowedFields.includes(key)) {
+        updateFields.push(`${key} = $${paramIndex}`);
+        updateValues.push(value);
+        paramIndex++;
+      }
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    // Add updated_at timestamp
+    updateFields.push('updated_at = NOW()');
+    updateValues.push(licenseKey);
+
+    const updateQuery = `
+      UPDATE licenses 
+      SET ${updateFields.join(', ')} 
+      WHERE license_key = $${paramIndex}
+      RETURNING *
+    `;
+
+    const result = await client.query(updateQuery, updateValues);
+    
+    console.log(`License ${licenseKey} updated successfully`);
+    res.json({ 
+      message: 'License updated successfully',
+      license: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Update license error:', error);
+    res.status(500).json({ error: 'Failed to update license' });
+  } finally {
+    client.release();
+  }
+});
+
 // GET feedback summary
 app.get('/api/feedback/summary', async (req, res) => {
   try {
