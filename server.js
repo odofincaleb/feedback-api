@@ -693,6 +693,54 @@ app.get('/api/licenses/users', async (req, res) => {
   }
 });
 
+// DELETE license endpoint
+app.delete('/api/licenses/:licenseKey', async (req, res) => {
+  const { licenseKey } = req.params;
+  
+  if (!licenseKey) {
+    return res.status(400).json({ error: 'License key is required' });
+  }
+
+  const client = await db.connect();
+  try {
+    // First check if license exists and is expired
+    const licenseCheck = await client.query(
+      'SELECT license_key, expiry_date, status FROM licenses WHERE license_key = $1',
+      [licenseKey]
+    );
+
+    if (licenseCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'License not found' });
+    }
+
+    const license = licenseCheck.rows[0];
+    const now = new Date();
+    const expiryDate = new Date(license.expiry_date);
+
+    // Only allow deletion of expired licenses
+    if (expiryDate > now) {
+      return res.status(400).json({ 
+        error: 'Cannot delete active license. Only expired licenses can be deleted.' 
+      });
+    }
+
+    // Delete the license (cascade will handle related records)
+    await client.query('DELETE FROM licenses WHERE license_key = $1', [licenseKey]);
+    
+    console.log(`License ${licenseKey} deleted successfully`);
+    res.json({ 
+      message: 'License deleted successfully',
+      licenseKey: licenseKey
+    });
+
+  } catch (error) {
+    console.error('Delete license error:', error);
+    res.status(500).json({ error: 'Failed to delete license' });
+  } finally {
+    client.release();
+  }
+});
+
 // GET feedback summary
 app.get('/api/feedback/summary', async (req, res) => {
   try {
