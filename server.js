@@ -717,10 +717,13 @@ app.delete('/api/licenses/:licenseKey', async (req, res) => {
     const now = new Date();
     const expiryDate = new Date(license.expiry_date);
 
-    // Only allow deletion of expired licenses
-    if (expiryDate > now) {
+    // Allow deletion of expired licenses OR inactive/suspended licenses
+    const isExpired = expiryDate <= now;
+    const isInactive = license.status === 'suspended' || license.status === 'inactive';
+    
+    if (!isExpired && !isInactive) {
       return res.status(400).json({ 
-        error: 'Cannot delete active license. Only expired licenses can be deleted.' 
+        error: 'Cannot delete active license. Only expired or inactive licenses can be deleted.' 
       });
     }
 
