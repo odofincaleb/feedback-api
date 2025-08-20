@@ -320,6 +320,64 @@ app.get('/api/licenses', async (req, res) => {
   }
 });
 
+// Create new license
+app.post('/api/licenses', async (req, res) => {
+  const { licenseKey, customerName, email, maxDevices, durationDays } = req.body || {};
+  
+  if (!licenseKey) {
+    return res.status(400).json({ error: 'licenseKey is required' });
+  }
+  
+  const client = await db.connect();
+  try {
+    // Check if license already exists
+    const existing = await client.query(`SELECT license_key FROM licenses WHERE license_key=$1`, [licenseKey]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: 'license_already_exists' });
+    }
+    
+    // Calculate expiry date
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + (durationDays || 30));
+    
+    // Insert new license
+    await client.query(`
+      INSERT INTO licenses (
+        license_key, 
+        email, 
+        customer_name,
+        status, 
+        max_devices, 
+        expiry_date,
+        created_at,
+        updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+    `, [
+      licenseKey,
+      email || null,
+      customerName || null,
+      'active',
+      maxDevices || 3,
+      expiryDate.toISOString()
+    ]);
+    
+    // Get the created license
+    const { rows } = await client.query(`SELECT * FROM licenses WHERE license_key=$1`, [licenseKey]);
+    
+    res.json({
+      success: true,
+      license: rows[0],
+      message: 'License created successfully'
+    });
+    
+  } catch (e) {
+    console.error('Create license error:', e);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    client.release();
+  }
+});
+
 // Utility: prune stale devices beyond grace period
 async function pruneStaleDevices(client, licenseKey) {
   const cutoff = new Date(Date.now() - GRACE_DAYS * 24 * 60 * 60 * 1000).toISOString();
