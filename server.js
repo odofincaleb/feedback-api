@@ -907,6 +907,103 @@ app.get('/api/feedback/summary', async (req, res) => {
   }
 });
 
+// Analytics tracking endpoints
+app.post('/api/analytics/track', async (req, res) => {
+  const { eventType, formType, userId, licenseKey, data } = req.body;
+  
+  try {
+    const client = await db.connect();
+    try {
+      // Create analytics table if it doesn't exist
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS analytics_events (
+          id SERIAL PRIMARY KEY,
+          event_type VARCHAR(50) NOT NULL,
+          form_type VARCHAR(100),
+          user_id VARCHAR(255),
+          license_key VARCHAR(64),
+          data JSONB,
+          timestamp TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+      
+      // Insert the analytics event
+      await client.query(
+        `INSERT INTO analytics_events (event_type, form_type, user_id, license_key, data) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [eventType, formType, userId, licenseKey, JSON.stringify(data || {})]
+      );
+      
+      res.json({ success: true, message: 'Event tracked successfully' });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Analytics tracking error:', error);
+    res.status(500).json({ error: 'Failed to track event' });
+  }
+});
+
+// GET analytics data
+app.get('/api/analytics/data', async (req, res) => {
+  try {
+    const client = await db.connect();
+    try {
+      // Create analytics table if it doesn't exist
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS analytics_events (
+          id SERIAL PRIMARY KEY,
+          event_type VARCHAR(50) NOT NULL,
+          form_type VARCHAR(100),
+          user_id VARCHAR(255),
+          license_key VARCHAR(64),
+          data JSONB,
+          timestamp TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+      
+      // Get form usage analytics
+      const formUsageResult = await client.query(`
+        SELECT form_type, COUNT(*) as count 
+        FROM analytics_events 
+        WHERE event_type = 'form_usage' 
+        AND form_type IS NOT NULL
+        GROUP BY form_type 
+        ORDER BY count DESC
+      `);
+      
+      // Get recent activity
+      const recentActivityResult = await client.query(`
+        SELECT event_type, form_type, user_id, license_key, timestamp
+        FROM analytics_events 
+        ORDER BY timestamp DESC 
+        LIMIT 20
+      `);
+      
+      // Get daily usage stats
+      const dailyUsageResult = await client.query(`
+        SELECT DATE(timestamp) as date, COUNT(*) as count
+        FROM analytics_events 
+        WHERE event_type = 'form_usage'
+        GROUP BY DATE(timestamp)
+        ORDER BY date DESC
+        LIMIT 30
+      `);
+      
+      res.json({
+        formUsage: formUsageResult.rows,
+        recentActivity: recentActivityResult.rows,
+        dailyUsage: dailyUsageResult.rows
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Analytics data fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch analytics data' });
+  }
+});
+
 // Manual backup endpoint
 app.post('/api/backup', async (req, res) => {
   try {
