@@ -76,6 +76,7 @@ const createTable = async () => {
       CREATE TABLE IF NOT EXISTS licenses (
         license_key VARCHAR(64) PRIMARY KEY,
         email VARCHAR(255),
+        customer_name VARCHAR(255),
         plan VARCHAR(50) DEFAULT 'standard',
         status VARCHAR(32) DEFAULT 'active',
         max_devices INTEGER DEFAULT 2,
@@ -86,6 +87,8 @@ const createTable = async () => {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    // Ensure new columns exist for older deployments
+    await client.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255)`);
     // Ensure new columns exist for older deployments
     await client.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS seats INTEGER DEFAULT 1`);
     await client.query(`ALTER TABLE licenses ADD COLUMN IF NOT EXISTS max_devices_per_user INTEGER DEFAULT 2`);
@@ -357,10 +360,10 @@ app.post('/api/licenses', async (req, res) => {
     
     // Insert license
     const result = await client.query(`
-      INSERT INTO licenses (license_key, email, plan, status, max_devices, seats, max_devices_per_user, expiry_date)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO licenses (license_key, email, customer_name, plan, status, max_devices, seats, max_devices_per_user, expiry_date)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
-    `, [licenseKey, customerEmail, plan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
+    `, [licenseKey, customerEmail, customerName || customerEmail, plan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
     
     const newLicense = result.rows[0];
     
@@ -369,6 +372,7 @@ app.post('/api/licenses', async (req, res) => {
       license: {
         license_key: newLicense.license_key,
         email: newLicense.email,
+        customer_name: newLicense.customer_name,
         plan: newLicense.plan,
         status: newLicense.status,
         max_devices: newLicense.max_devices,
