@@ -296,15 +296,15 @@ app.get('/api/licenses', async (req, res) => {
   try {
     // Get all licenses with device count
     const { rows } = await client.query(`
-      SELECT 
+      SELECT
         l.*,
         COALESCE(device_counts.active_devices, 0) as registered_systems_count
       FROM licenses l
       LEFT JOIN (
-        SELECT 
+        SELECT
           license_key,
           COUNT(*) as active_devices
-        FROM license_devices 
+        FROM license_devices
         WHERE status = 'active'
         GROUP BY license_key
       ) device_counts ON l.license_key = device_counts.license_key
@@ -320,56 +320,66 @@ app.get('/api/licenses', async (req, res) => {
   }
 });
 
-// Create new license
+// Create new license (for License Manager)
 app.post('/api/licenses', async (req, res) => {
-  const { licenseKey, customerName, email, maxDevices, durationDays } = req.body || {};
+  const { customerName, customerEmail, licenseDuration, maxSystems, plan = 'standard' } = req.body || {};
   
-  if (!licenseKey) {
-    return res.status(400).json({ error: 'licenseKey is required' });
+  if (!customerEmail || !licenseDuration || !maxSystems) {
+    return res.status(400).json({ error: 'customerEmail, licenseDuration, and maxSystems are required' });
   }
   
   const client = await db.connect();
   try {
-    // Check if license already exists
-    const existing = await client.query(`SELECT license_key FROM licenses WHERE license_key=$1`, [licenseKey]);
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'license_already_exists' });
+    // Generate license key
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let licenseKey = 'FD-';
+    
+    // Generate 8 characters for first part
+    for (let i = 0; i < 8; i++) {
+      licenseKey += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    licenseKey += '-';
+    
+    // Generate 4 characters for second part
+    for (let i = 0; i < 4; i++) {
+      licenseKey += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    licenseKey += '-';
+    
+    // Generate 4 characters for third part
+    for (let i = 0; i < 4; i++) {
+      licenseKey += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     
     // Calculate expiry date
     const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + (durationDays || 30));
+    expiryDate.setDate(expiryDate.getDate() + parseInt(licenseDuration));
     
-    // Insert new license
-    await client.query(`
-      INSERT INTO licenses (
-        license_key, 
-        email, 
-        customer_name,
-        status, 
-        max_devices, 
-        expiry_date,
-        created_at,
-        updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-    `, [
-      licenseKey,
-      email || null,
-      customerName || null,
-      'active',
-      maxDevices || 3,
-      expiryDate.toISOString()
-    ]);
+    // Insert license
+    const result = await client.query(`
+      INSERT INTO licenses (license_key, email, plan, status, max_devices, seats, max_devices_per_user, expiry_date)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `, [licenseKey, customerEmail, plan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
     
-    // Get the created license
-    const { rows } = await client.query(`SELECT * FROM licenses WHERE license_key=$1`, [licenseKey]);
+    const newLicense = result.rows[0];
     
     res.json({
       success: true,
-      license: rows[0],
-      message: 'License created successfully'
+      license: {
+        license_key: newLicense.license_key,
+        email: newLicense.email,
+        plan: newLicense.plan,
+        status: newLicense.status,
+        max_devices: newLicense.max_devices,
+        seats: newLicense.seats,
+        max_devices_per_user: newLicense.max_devices_per_user,
+        expiry_date: newLicense.expiry_date,
+        created_at: newLicense.created_at,
+        active_devices: 0,
+        total_users: 0
+      }
     });
-    
   } catch (e) {
     console.error('Create license error:', e);
     res.status(500).json({ error: 'internal_error' });
@@ -537,148 +547,6 @@ app.get('/api/licenses/status', async (req, res) => {
   }
 });
 
-// Get devices for a license
-app.get('/api/licenses/:licenseKey/devices', async (req, res) => {
-  const { licenseKey } = req.params;
-  if (!licenseKey) return res.status(400).json({ error: 'licenseKey is required' });
-  
-  const client = await db.connect();
-  try {
-    // First check if license exists
-    const licRows = await client.query(`SELECT license_key FROM licenses WHERE license_key=$1`, [licenseKey]);
-    if (licRows.rows.length === 0) {
-      return res.status(404).json({ error: 'license_not_found' });
-    }
-    
-    // Get all devices for this license (both active and revoked)
-    const { rows } = await client.query(`
-      SELECT 
-        device_id, 
-        platform, 
-        device_name, 
-        user_email,
-        first_activated_at,
-        last_seen_at,
-        status
-      FROM license_devices 
-      WHERE license_key=$1 
-      ORDER BY last_seen_at DESC
-    `, [licenseKey]);
-    
-    res.json(rows);
-  } catch (e) {
-    console.error('Get devices error:', e);
-    res.status(500).json({ error: 'internal_error' });
-  } finally {
-    client.release();
-  }
-});
-
-// Register a new device (alternative to activate)
-app.post('/api/licenses/devices/register', async (req, res) => {
-  const { licenseKey, systemId, deviceName, userAgent, ipAddress } = req.body || {};
-  if (!licenseKey || !systemId) {
-    return res.status(400).json({ error: 'licenseKey and systemId are required' });
-  }
-  
-  const client = await db.connect();
-  try {
-    // Check if license exists and is active
-    const licRows = await client.query(`SELECT license_key, status, max_devices FROM licenses WHERE license_key=$1`, [licenseKey]);
-    if (licRows.rows.length === 0) {
-      return res.status(404).json({ error: 'license_not_found' });
-    }
-    
-    const license = licRows.rows[0];
-    if (license.status !== 'active') {
-      return res.status(403).json({ error: 'license_inactive' });
-    }
-    
-    // Check if device already exists
-    const existingDevice = await client.query(`SELECT * FROM license_devices WHERE license_key=$1 AND device_id=$2`, [licenseKey, systemId]);
-    
-    if (existingDevice.rows.length > 0) {
-      // Update existing device
-      await client.query(`
-        UPDATE license_devices 
-        SET device_name=$3, last_seen_at=NOW(), status='active'
-        WHERE license_key=$1 AND device_id=$2
-      `, [licenseKey, systemId, deviceName || null]);
-    } else {
-      // Check device limit
-      const activeDevices = await client.query(`SELECT COUNT(*)::int AS cnt FROM license_devices WHERE license_key=$1 AND status='active'`, [licenseKey]);
-      const currentCount = activeDevices.rows[0].cnt || 0;
-      
-      if (currentCount >= license.max_devices) {
-        return res.status(409).json({ 
-          error: 'device_limit_reached', 
-          maxDevices: license.max_devices,
-          currentCount: currentCount
-        });
-      }
-      
-      // Insert new device
-      await client.query(`
-        INSERT INTO license_devices (license_key, device_id, platform, device_name, user_email)
-        VALUES ($1, $2, $3, $4, $5)
-      `, [licenseKey, systemId, userAgent || 'unknown', deviceName || null, null]);
-    }
-    
-    // Return updated device list
-    const { rows } = await client.query(`
-      SELECT device_id, platform, device_name, first_activated_at, last_seen_at, status
-      FROM license_devices 
-      WHERE license_key=$1 AND status='active'
-      ORDER BY last_seen_at DESC
-    `, [licenseKey]);
-    
-    res.json({ 
-      success: true, 
-      devices: rows,
-      totalDevices: rows.length,
-      maxDevices: license.max_devices
-    });
-  } catch (e) {
-    console.error('Device registration error:', e);
-    res.status(500).json({ error: 'internal_error' });
-  } finally {
-    client.release();
-  }
-});
-
-// Get device count for a license
-app.get('/api/licenses/:licenseKey/devices/count', async (req, res) => {
-  const { licenseKey } = req.params;
-  if (!licenseKey) return res.status(400).json({ error: 'licenseKey is required' });
-  
-  const client = await db.connect();
-  try {
-    // Check if license exists
-    const licRows = await client.query(`SELECT license_key, max_devices FROM licenses WHERE license_key=$1`, [licenseKey]);
-    if (licRows.rows.length === 0) {
-      return res.status(404).json({ error: 'license_not_found' });
-    }
-    
-    const license = licRows.rows[0];
-    
-    // Get active device count
-    const activeCount = await client.query(`SELECT COUNT(*)::int AS cnt FROM license_devices WHERE license_key=$1 AND status='active'`, [licenseKey]);
-    const totalCount = await client.query(`SELECT COUNT(*)::int AS cnt FROM license_devices WHERE license_key=$1`, [licenseKey]);
-    
-    res.json({
-      licenseKey: licenseKey,
-      activeDevices: activeCount.rows[0].cnt || 0,
-      totalDevices: totalCount.rows[0].cnt || 0,
-      maxDevices: license.max_devices || 0
-    });
-  } catch (e) {
-    console.error('Get device count error:', e);
-    res.status(500).json({ error: 'internal_error' });
-  } finally {
-    client.release();
-  }
-});
-
 // Admin revoke
 app.post('/api/licenses/devices/revoke', async (req, res) => {
   const { licenseKey, deviceId } = req.body || {};
@@ -751,131 +619,6 @@ app.get('/api/licenses/users', async (req, res) => {
   }
 });
 
-// DELETE license endpoint
-app.delete('/api/licenses/:licenseKey', async (req, res) => {
-  const { licenseKey } = req.params;
-  
-  if (!licenseKey) {
-    return res.status(400).json({ error: 'License key is required' });
-  }
-
-  const client = await db.connect();
-  try {
-    // First check if license exists and is expired
-    const licenseCheck = await client.query(
-      'SELECT license_key, expiry_date, status FROM licenses WHERE license_key = $1',
-      [licenseKey]
-    );
-
-    if (licenseCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'License not found' });
-    }
-
-    const license = licenseCheck.rows[0];
-    const now = new Date();
-    const expiryDate = new Date(license.expiry_date);
-
-    // Allow deletion of expired licenses OR inactive/suspended licenses
-    const isExpired = expiryDate <= now;
-    const isInactive = license.status === 'suspended' || license.status === 'inactive';
-    
-    if (!isExpired && !isInactive) {
-      return res.status(400).json({ 
-        error: 'Cannot delete active license. Only expired or inactive licenses can be deleted.' 
-      });
-    }
-
-    // Delete the license (cascade will handle related records)
-    await client.query('DELETE FROM licenses WHERE license_key = $1', [licenseKey]);
-    
-    console.log(`License ${licenseKey} deleted successfully`);
-    res.json({ 
-      message: 'License deleted successfully',
-      licenseKey: licenseKey
-    });
-
-  } catch (error) {
-    console.error('Delete license error:', error);
-    res.status(500).json({ error: 'Failed to delete license' });
-  } finally {
-    client.release();
-  }
-});
-
-// PUT license endpoint (for updating license details)
-app.put('/api/licenses/:licenseKey', async (req, res) => {
-  const { licenseKey } = req.params;
-  const updateData = req.body;
-  
-  if (!licenseKey) {
-    return res.status(400).json({ error: 'License key is required' });
-  }
-
-  if (!updateData || Object.keys(updateData).length === 0) {
-    return res.status(400).json({ error: 'Update data is required' });
-  }
-
-  const client = await db.connect();
-  try {
-    // First check if license exists
-    const licenseCheck = await client.query(
-      'SELECT license_key FROM licenses WHERE license_key = $1',
-      [licenseKey]
-    );
-
-    if (licenseCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'License not found' });
-    }
-
-    // Build dynamic update query based on provided fields
-    const allowedFields = [
-      'email', 'plan', 'status', 'max_devices', 'seats', 
-      'max_devices_per_user', 'expiry_date', 'customer_name'
-    ];
-    
-    const updateFields = [];
-    const updateValues = [];
-    let paramIndex = 1;
-
-    for (const [key, value] of Object.entries(updateData)) {
-      if (allowedFields.includes(key)) {
-        updateFields.push(`${key} = $${paramIndex}`);
-        updateValues.push(value);
-        paramIndex++;
-      }
-    }
-
-    if (updateFields.length === 0) {
-      return res.status(400).json({ error: 'No valid fields to update' });
-    }
-
-    // Add updated_at timestamp
-    updateFields.push('updated_at = NOW()');
-    updateValues.push(licenseKey);
-
-    const updateQuery = `
-      UPDATE licenses 
-      SET ${updateFields.join(', ')} 
-      WHERE license_key = $${paramIndex}
-      RETURNING *
-    `;
-
-    const result = await client.query(updateQuery, updateValues);
-    
-    console.log(`License ${licenseKey} updated successfully`);
-    res.json({ 
-      message: 'License updated successfully',
-      license: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('Update license error:', error);
-    res.status(500).json({ error: 'Failed to update license' });
-  } finally {
-    client.release();
-  }
-});
-
 // GET feedback summary
 app.get('/api/feedback/summary', async (req, res) => {
   try {
@@ -904,103 +647,6 @@ app.get('/api/feedback/summary', async (req, res) => {
   } catch (error) {
     console.error('Error fetching feedback summary:', error);
     res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Analytics tracking endpoints
-app.post('/api/analytics/track', async (req, res) => {
-  const { eventType, formType, userId, licenseKey, data } = req.body;
-  
-  try {
-    const client = await db.connect();
-    try {
-      // Create analytics table if it doesn't exist
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS analytics_events (
-          id SERIAL PRIMARY KEY,
-          event_type VARCHAR(50) NOT NULL,
-          form_type VARCHAR(100),
-          user_id VARCHAR(255),
-          license_key VARCHAR(64),
-          data JSONB,
-          timestamp TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
-      
-      // Insert the analytics event
-      await client.query(
-        `INSERT INTO analytics_events (event_type, form_type, user_id, license_key, data) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [eventType, formType, userId, licenseKey, JSON.stringify(data || {})]
-      );
-      
-      res.json({ success: true, message: 'Event tracked successfully' });
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    console.error('Analytics tracking error:', error);
-    res.status(500).json({ error: 'Failed to track event' });
-  }
-});
-
-// GET analytics data
-app.get('/api/analytics/data', async (req, res) => {
-  try {
-    const client = await db.connect();
-    try {
-      // Create analytics table if it doesn't exist
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS analytics_events (
-          id SERIAL PRIMARY KEY,
-          event_type VARCHAR(50) NOT NULL,
-          form_type VARCHAR(100),
-          user_id VARCHAR(255),
-          license_key VARCHAR(64),
-          data JSONB,
-          timestamp TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
-      
-      // Get form usage analytics
-      const formUsageResult = await client.query(`
-        SELECT form_type, COUNT(*) as count 
-        FROM analytics_events 
-        WHERE event_type = 'form_usage' 
-        AND form_type IS NOT NULL
-        GROUP BY form_type 
-        ORDER BY count DESC
-      `);
-      
-      // Get recent activity
-      const recentActivityResult = await client.query(`
-        SELECT event_type, form_type, user_id, license_key, timestamp
-        FROM analytics_events 
-        ORDER BY timestamp DESC 
-        LIMIT 20
-      `);
-      
-      // Get daily usage stats
-      const dailyUsageResult = await client.query(`
-        SELECT DATE(timestamp) as date, COUNT(*) as count
-        FROM analytics_events 
-        WHERE event_type = 'form_usage'
-        GROUP BY DATE(timestamp)
-        ORDER BY date DESC
-        LIMIT 30
-      `);
-      
-      res.json({
-        formUsage: formUsageResult.rows,
-        recentActivity: recentActivityResult.rows,
-        dailyUsage: dailyUsageResult.rows
-      });
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    console.error('Analytics data fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch analytics data' });
   }
 });
 
