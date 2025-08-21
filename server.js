@@ -132,6 +132,55 @@ const createTable = async () => {
 
 createTable();
 
+// Migration: Update existing licenses to populate customer_name
+const migrateExistingLicenses = async () => {
+  const client = await db.connect();
+  try {
+    console.log('🔍 Running migration: Updating existing licenses...');
+    
+    // Get all licenses that have email but no customer_name
+    const { rows } = await client.query(`
+      SELECT license_key, email, customer_name 
+      FROM licenses 
+      WHERE email IS NOT NULL AND (customer_name IS NULL OR customer_name = '')
+    `);
+    
+    console.log(`📊 Found ${rows.length} licenses to update`);
+    
+    if (rows.length === 0) {
+      console.log('✅ No licenses need updating');
+      return;
+    }
+    
+    // Update each license
+    for (const license of rows) {
+      console.log(`🔄 Updating license: ${license.license_key}`);
+      
+      // Extract name from email (everything before @)
+      const emailName = license.email.split('@')[0];
+      const customerName = emailName.charAt(0).toUpperCase() + emailName.slice(1);
+      
+      await client.query(`
+        UPDATE licenses 
+        SET customer_name = $1 
+        WHERE license_key = $2
+      `, [customerName, license.license_key]);
+      
+      console.log(`   ✅ Updated customer_name to: ${customerName}`);
+    }
+    
+    console.log('🎉 Migration completed successfully!');
+    
+  } catch (error) {
+    console.error('❌ Migration error:', error);
+  } finally {
+    client.release();
+  }
+};
+
+// Run migration after a short delay to ensure database is ready
+setTimeout(migrateExistingLicenses, 2000);
+
 // S3 Backup Functions
 const backupToS3 = async () => {
   try {
