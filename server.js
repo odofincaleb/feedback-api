@@ -544,6 +544,72 @@ app.put('/api/licenses/:licenseKey', async (req, res) => {
   }
 });
 
+// Delete license (for License Manager - only inactive licenses)
+app.delete('/api/licenses/:licenseKey', async (req, res) => {
+  const { licenseKey } = req.params;
+  
+  if (!licenseKey) {
+    return res.status(400).json({ error: 'licenseKey is required' });
+  }
+  
+  const client = await db.connect();
+  try {
+    // Check if license exists and get its status
+    const { rows } = await client.query(`SELECT * FROM licenses WHERE license_key = $1`, [licenseKey]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'license_not_found' });
+    }
+    
+    const license = rows[0];
+    
+    // Only allow deletion of inactive/suspended licenses
+    if (license.status === 'active') {
+      return res.status(403).json({ 
+        error: 'cannot_delete_active_license',
+        message: 'Only inactive or suspended licenses can be deleted. Please deactivate the license first.'
+      });
+    }
+    
+    // Check if there are any active devices
+    const deviceCount = await client.query(`
+      SELECT COUNT(*) as active_devices 
+      FROM license_devices 
+      WHERE license_key = $1 AND status = 'active'
+    `, [licenseKey]);
+    
+    const activeDevices = parseInt(deviceCount.rows[0].active_devices) || 0;
+    if (activeDevices > 0) {
+      return res.status(403).json({ 
+        error: 'cannot_delete_license_with_active_devices',
+        message: `Cannot delete license with ${activeDevices} active device(s). Please revoke all devices first.`
+      });
+    }
+    
+    // Delete related records first (due to foreign key constraints)
+    await client.query(`DELETE FROM license_devices WHERE license_key = $1`, [licenseKey]);
+    await client.query(`DELETE FROM license_users WHERE license_key = $1`, [licenseKey]);
+    
+    // Delete the license
+    await client.query(`DELETE FROM licenses WHERE license_key = $1`, [licenseKey]);
+    
+    res.json({
+      success: true,
+      message: 'License deleted successfully',
+      deletedLicense: {
+        license_key: license.license_key,
+        email: license.email,
+        customer_name: license.customer_name,
+        status: license.status
+      }
+    });
+  } catch (e) {
+    console.error('Delete license error:', e);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    client.release();
+  }
+});
+
 // Utility: prune stale devices beyond grace period
 async function pruneStaleDevices(client, licenseKey) {
   const cutoff = new Date(Date.now() - GRACE_DAYS * 24 * 60 * 60 * 1000).toISOString();
