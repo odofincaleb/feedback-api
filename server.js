@@ -570,20 +570,9 @@ app.delete('/api/licenses/:licenseKey', async (req, res) => {
       });
     }
     
-    // Check if there are any active devices
-    const deviceCount = await client.query(`
-      SELECT COUNT(*) as active_devices 
-      FROM license_devices 
-      WHERE license_key = $1 AND status = 'active'
-    `, [licenseKey]);
-    
-    const activeDevices = parseInt(deviceCount.rows[0].active_devices) || 0;
-    if (activeDevices > 0) {
-      return res.status(403).json({ 
-        error: 'cannot_delete_license_with_active_devices',
-        message: `Cannot delete license with ${activeDevices} active device(s). Please revoke all devices first.`
-      });
-    }
+    // For inactive licenses, we allow deletion even with active devices
+    // since inactive licenses shouldn't function anyway
+    console.log(`Deleting inactive license ${licenseKey} with status: ${license.status}`);
     
     // Delete related records first (due to foreign key constraints)
     await client.query(`DELETE FROM license_devices WHERE license_key = $1`, [licenseKey]);
