@@ -339,6 +339,53 @@ app.put('/api/feedback/:id/status', async (req, res) => {
   }
 });
 
+// DELETE individual feedback
+app.delete('/api/feedback/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const client = await db.connect();
+    try {
+      const result = await client.query(
+        'DELETE FROM feedback WHERE id = $1 RETURNING *',
+        [id]
+      );
+      
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Feedback not found' });
+      }
+      
+      res.json({ message: 'Feedback deleted successfully' });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error deleting feedback:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE all feedback
+app.delete('/api/feedback', async (req, res) => {
+  try {
+    const client = await db.connect();
+    try {
+      const result = await client.query('DELETE FROM feedback RETURNING COUNT(*)');
+      const deletedCount = parseInt(result.rows[0].count);
+      
+      res.json({ 
+        message: `All feedback deleted successfully`, 
+        deletedCount: deletedCount 
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error deleting all feedback:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ===== License Management Endpoints =====
 const GRACE_DAYS = parseInt(process.env.GRACE_DAYS || '7', 10);
 
