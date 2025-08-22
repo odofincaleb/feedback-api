@@ -122,6 +122,36 @@ const createTable = async () => {
         UNIQUE (license_key, user_email)
       )
     `);
+
+    // Form usage tracking table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS form_usage (
+        id SERIAL PRIMARY KEY,
+        license_key VARCHAR(64) REFERENCES licenses(license_key) ON DELETE CASCADE,
+        user_email VARCHAR(255),
+        form_type VARCHAR(100) NOT NULL,
+        form_name VARCHAR(255),
+        platform VARCHAR(32) DEFAULT 'web', -- 'web' or 'mobile'
+        device_id VARCHAR(128),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    // System activities table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS system_activities (
+        id SERIAL PRIMARY KEY,
+        license_key VARCHAR(64) REFERENCES licenses(license_key) ON DELETE SET NULL,
+        user_email VARCHAR(255),
+        activity_type VARCHAR(100) NOT NULL,
+        activity_description TEXT,
+        platform VARCHAR(32) DEFAULT 'web',
+        device_id VARCHAR(128),
+        metadata JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
     console.log('Database table created/verified');
   } catch (error) {
     console.error('Database setup error:', error);
@@ -382,6 +412,178 @@ app.delete('/api/feedback', async (req, res) => {
     }
   } catch (error) {
     console.error('Error deleting all feedback:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ===== Form Usage Tracking Endpoints =====
+
+// Track form usage
+app.post('/api/analytics/form-usage', async (req, res) => {
+  try {
+    const { licenseKey, userEmail, formType, formName, platform = 'web', deviceId } = req.body;
+    
+    if (!formType) {
+      return res.status(400).json({ error: 'Form type is required' });
+    }
+    
+    const client = await db.connect();
+    try {
+      const result = await client.query(
+        'INSERT INTO form_usage (license_key, user_email, form_type, form_name, platform, device_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [licenseKey, userEmail, formType, formName, platform, deviceId]
+      );
+      
+      res.status(201).json(result.rows[0]);
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error tracking form usage:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get form usage analytics
+app.get('/api/analytics/form-usage', async (req, res) => {
+  try {
+    const { timeRange = '7d' } = req.query;
+    
+    let timeFilter = '';
+    switch (timeRange) {
+      case '1d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '1 day'";
+        break;
+      case '7d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '7 days'";
+        break;
+      case '30d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '30 days'";
+        break;
+      case '90d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '90 days'";
+        break;
+      default:
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '7 days'";
+    }
+    
+    const client = await db.connect();
+    try {
+      const result = await client.query(`
+        SELECT 
+          form_type,
+          form_name,
+          COUNT(*) as usage_count,
+          COUNT(DISTINCT user_email) as unique_users,
+          COUNT(DISTINCT license_key) as unique_licenses
+        FROM form_usage 
+        ${timeFilter}
+        GROUP BY form_type, form_name
+        ORDER BY usage_count DESC
+      `);
+      
+      res.json(result.rows);
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error fetching form usage analytics:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ===== System Activities Endpoints =====
+
+// Track system activity
+app.post('/api/analytics/activity', async (req, res) => {
+  try {
+    const { licenseKey, userEmail, activityType, activityDescription, platform = 'web', deviceId, metadata = {} } = req.body;
+    
+    if (!activityType) {
+      return res.status(400).json({ error: 'Activity type is required' });
+    }
+    
+    const client = await db.connect();
+    try {
+      const result = await client.query(
+        'INSERT INTO system_activities (license_key, user_email, activity_type, activity_description, platform, device_id, metadata) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+        [licenseKey, userEmail, activityType, activityDescription, platform, deviceId, JSON.stringify(metadata)]
+      );
+      
+      res.status(201).json(result.rows[0]);
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error tracking system activity:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get system activities
+app.get('/api/analytics/activities', async (req, res) => {
+  try {
+    const { page = 1, limit = 10, timeRange = '7d' } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let timeFilter = '';
+    switch (timeRange) {
+      case '1d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '1 day'";
+        break;
+      case '7d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '7 days'";
+        break;
+      case '30d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '30 days'";
+        break;
+      case '90d':
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '90 days'";
+        break;
+      default:
+        timeFilter = "WHERE created_at >= NOW() - INTERVAL '7 days'";
+    }
+    
+    const client = await db.connect();
+    try {
+      // Get total count
+      const countResult = await client.query(`
+        SELECT COUNT(*) as total
+        FROM system_activities 
+        ${timeFilter}
+      `);
+      
+      // Get paginated activities
+      const result = await client.query(`
+        SELECT 
+          id,
+          license_key,
+          user_email,
+          activity_type,
+          activity_description,
+          platform,
+          metadata,
+          created_at
+        FROM system_activities 
+        ${timeFilter}
+        ORDER BY created_at DESC
+        LIMIT $1 OFFSET $2
+      `, [limit, offset]);
+      
+      res.json({
+        activities: result.rows,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: parseInt(countResult.rows[0].total),
+          totalPages: Math.ceil(countResult.rows[0].total / limit)
+        }
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Error fetching system activities:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
