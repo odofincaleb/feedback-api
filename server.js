@@ -441,6 +441,109 @@ app.post('/api/licenses', async (req, res) => {
   }
 });
 
+// Update license (for License Manager)
+app.put('/api/licenses/:licenseKey', async (req, res) => {
+  const { licenseKey } = req.params;
+  const updateData = req.body || {};
+  
+  if (!licenseKey) {
+    return res.status(400).json({ error: 'licenseKey is required' });
+  }
+  
+  const client = await db.connect();
+  try {
+    // Check if license exists
+    const { rows } = await client.query(`SELECT * FROM licenses WHERE license_key = $1`, [licenseKey]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'license_not_found' });
+    }
+    
+    const license = rows[0];
+    
+    // Build update query dynamically based on provided fields
+    const updateFields = [];
+    const updateValues = [];
+    let paramIndex = 1;
+    
+    // Handle different update fields
+    if (updateData.status !== undefined) {
+      updateFields.push(`status = $${paramIndex++}`);
+      updateValues.push(updateData.status);
+    }
+    
+    if (updateData.customerName !== undefined) {
+      updateFields.push(`customer_name = $${paramIndex++}`);
+      updateValues.push(updateData.customerName);
+    }
+    
+    if (updateData.email !== undefined) {
+      updateFields.push(`email = $${paramIndex++}`);
+      updateValues.push(updateData.email);
+    }
+    
+    if (updateData.maxSystems !== undefined) {
+      updateFields.push(`max_devices = $${paramIndex++}`);
+      updateValues.push(parseInt(updateData.maxSystems));
+    }
+    
+    if (updateData.expiryDate !== undefined) {
+      updateFields.push(`expiry_date = $${paramIndex++}`);
+      updateValues.push(updateData.expiryDate);
+    }
+    
+    if (updateFields.length === 0) {
+      return res.status(400).json({ error: 'no_valid_fields_to_update' });
+    }
+    
+    // Add updated_at timestamp
+    updateFields.push(`updated_at = NOW()`);
+    
+    // Add licenseKey to values array
+    updateValues.push(licenseKey);
+    
+    const updateQuery = `
+      UPDATE licenses 
+      SET ${updateFields.join(', ')}
+      WHERE license_key = $${paramIndex}
+      RETURNING *
+    `;
+    
+    const result = await client.query(updateQuery, updateValues);
+    const updatedLicense = result.rows[0];
+    
+    // Get active devices count
+    const deviceCount = await client.query(`
+      SELECT COUNT(*) as active_devices 
+      FROM license_devices 
+      WHERE license_key = $1 AND status = 'active'
+    `, [licenseKey]);
+    
+    res.json({
+      success: true,
+      license: {
+        license_key: updatedLicense.license_key,
+        email: updatedLicense.email,
+        customer_name: updatedLicense.customer_name,
+        plan: updatedLicense.plan,
+        status: updatedLicense.status,
+        max_devices: updatedLicense.max_devices,
+        seats: updatedLicense.seats,
+        max_devices_per_user: updatedLicense.max_devices_per_user,
+        expiry_date: updatedLicense.expiry_date,
+        created_at: updatedLicense.created_at,
+        updated_at: updatedLicense.updated_at,
+        active_devices: parseInt(deviceCount.rows[0].active_devices) || 0,
+        total_users: 0
+      }
+    });
+  } catch (e) {
+    console.error('Update license error:', e);
+    res.status(500).json({ error: 'internal_error' });
+  } finally {
+    client.release();
+  }
+});
+
 // Utility: prune stale devices beyond grace period
 async function pruneStaleDevices(client, licenseKey) {
   const cutoff = new Date(Date.now() - GRACE_DAYS * 24 * 60 * 60 * 1000).toISOString();
