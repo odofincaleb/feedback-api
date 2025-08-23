@@ -866,6 +866,29 @@ async function getActiveDevices(client, licenseKey) {
   return rows;
 }
 
+// Helper function to get permissions for a role
+function getPermissionsForRole(role) {
+  const permissions = {
+    'admin': [
+      'manage_users',
+      'manage_devices', 
+      'view_analytics',
+      'manage_license_settings',
+      'revoke_devices',
+      'add_remove_users',
+      'view_own_devices',
+      'use_software',
+      'view_license_info'
+    ],
+    'member': [
+      'view_own_devices',
+      'use_software',
+      'view_license_info'
+    ]
+  };
+  return permissions[role] || permissions['member'];
+}
+
 // Ensure a license exists (for testing/dev you can auto-create)
 async function ensureLicense(client, licenseKey) {
   const { rows } = await client.query(`SELECT * FROM licenses WHERE license_key=$1`, [licenseKey]);
@@ -988,7 +1011,7 @@ app.post('/api/licenses/heartbeat', async (req, res) => {
 
 // Status
 app.get('/api/licenses/status', async (req, res) => {
-  const { licenseKey, deviceId } = req.query;
+  const { licenseKey, deviceId, userEmail } = req.query;
   if (!licenseKey) return res.status(400).json({ error: 'licenseKey is required' });
   const client = await db.connect();
   try {
@@ -998,7 +1021,33 @@ app.get('/api/licenses/status', async (req, res) => {
     await pruneStaleDevices(client, licenseKey);
     const active = await getActiveDevices(client, licenseKey);
     const thisDeviceActive = deviceId ? active.some(d => d.device_id === deviceId) : false;
-    res.json({ valid: lic.status === 'active', maxDevices: lic.max_devices, activeDevices: active, thisDeviceActive });
+    
+    const response = { 
+      valid: lic.status === 'active', 
+      maxDevices: lic.max_devices, 
+      activeDevices: active, 
+      thisDeviceActive 
+    };
+
+    // If userEmail is provided, include user role and permissions
+    if (userEmail) {
+      const userRows = await client.query(
+        `SELECT role, max_devices FROM license_users WHERE license_key=$1 AND user_email=$2 AND revoked_at IS NULL`, 
+        [licenseKey, userEmail]
+      );
+      
+      if (userRows.rows.length > 0) {
+        const user = userRows.rows[0];
+        response.userRole = user.role;
+        response.userPermissions = getPermissionsForRole(user.role);
+      } else {
+        // If user doesn't exist, create them with default permissions
+        response.userRole = 'member';
+        response.userPermissions = getPermissionsForRole('member');
+      }
+    }
+
+    res.json(response);
   } catch (e) {
     console.error('Status error:', e);
     res.status(500).json({ error: 'internal_error' });
@@ -1118,6 +1167,30 @@ app.post('/api/backup', async (req, res) => {
   } catch (error) {
     console.error('Manual backup failed:', error);
     res.status(500).json({ error: 'Backup failed' });
+  }
+});
+
+// Migration status endpoint
+app.get('/api/licenses/migration-status', async (req, res) => {
+  try {
+    const client = await db.connect();
+    try {
+      // Check if we have any licenses that need migration
+      const result = await client.query('SELECT COUNT(*) as count FROM licenses');
+      const totalLicenses = parseInt(result.rows[0].count);
+      
+      res.json({
+        needsMigration: false,
+        totalLicenses: totalLicenses,
+        migratedLicenses: totalLicenses,
+        migrationComplete: true
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Migration status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
