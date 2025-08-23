@@ -595,11 +595,12 @@ const GRACE_DAYS = parseInt(process.env.GRACE_DAYS || '7', 10);
 app.get('/api/licenses', async (req, res) => {
   const client = await db.connect();
   try {
-    // Get all licenses with device count
+    // Get all licenses with device count and user count
     const { rows } = await client.query(`
       SELECT
         l.*,
-        COALESCE(device_counts.active_devices, 0) as registered_systems_count
+        COALESCE(device_counts.active_devices, 0) as active_devices,
+        COALESCE(user_counts.total_users, 0) as total_users
       FROM licenses l
       LEFT JOIN (
         SELECT
@@ -609,6 +610,14 @@ app.get('/api/licenses', async (req, res) => {
         WHERE status = 'active'
         GROUP BY license_key
       ) device_counts ON l.license_key = device_counts.license_key
+      LEFT JOIN (
+        SELECT
+          license_key,
+          COUNT(*) as total_users
+        FROM license_users
+        WHERE revoked_at IS NULL
+        GROUP BY license_key
+      ) user_counts ON l.license_key = user_counts.license_key
       ORDER BY l.created_at DESC
     `);
     
