@@ -1310,5 +1310,7 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
-/ /   M A N U A L   D E P L O Y M E N T   T R I G G E R   -   F o r c e   R a i l w a y   t o   d e p l o y   l i f e t i m e   l i c e n s e   s u p p o r t  
+
+// MANUAL DEPLOYMENT TRIGGER - Force Railway to deploy lifetime license support
+ 
  
