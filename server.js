@@ -10,6 +10,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 
+// Trust proxy for Railway deployment (fixes X-Forwarded-For error)
+app.set('trust proxy', 1);
+
 // AWS S3 Configuration
 const s3 = new AWS.S3({
   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
