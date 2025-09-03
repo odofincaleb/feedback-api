@@ -261,6 +261,52 @@ const migrateLifetimeLicenses = async () => {
 // Run lifetime license migration after a delay
 setTimeout(migrateLifetimeLicenses, 4000);
 
+// Direct fix for specific lifetime licenses that weren't caught by migration
+const fixSpecificLifetimeLicenses = async () => {
+  const client = await db.connect();
+  try {
+    console.log('🔍 Running direct lifetime license fix...');
+    
+    // List of specific license keys that should be lifetime
+    const lifetimeLicenseKeys = [
+      'FD-3PTP2KYR-BB3J-J63N',  // life2@gmail.com
+      'FD-2GANYDZT-UN5S-KBVT',  // life@gmail.com
+      'FD-S2OGMNRB-HX3Z-E5UU'   // life3@gmail.com
+    ];
+    
+    console.log(`📊 Found ${lifetimeLicenseKeys.length} licenses to fix directly`);
+    
+    // Update each license to have plan = 'lifetime' and 999-year expiry
+    for (const licenseKey of lifetimeLicenseKeys) {
+      console.log(`🔄 Directly fixing license: ${licenseKey}`);
+      
+      // Set expiry date to 999 years in the future
+      const expiryDate = new Date();
+      expiryDate.setFullYear(expiryDate.getFullYear() + 999);
+      
+      await client.query(`
+        UPDATE licenses 
+        SET plan = 'lifetime', 
+            expiry_date = $1, 
+            updated_at = NOW()
+        WHERE license_key = $2
+      `, [expiryDate.toISOString(), licenseKey]);
+      
+      console.log(`   ✅ Updated ${licenseKey} to lifetime plan with 999-year expiry`);
+    }
+    
+    console.log('🎉 Direct lifetime license fix completed successfully!');
+    
+  } catch (error) {
+    console.error('❌ Direct lifetime license fix error:', error);
+  } finally {
+    client.release();
+  }
+};
+
+// Run direct fix after a delay
+setTimeout(fixSpecificLifetimeLicenses, 6000);
+
 // S3 Backup Functions
 const backupToS3 = async () => {
   try {
