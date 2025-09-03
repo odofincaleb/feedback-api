@@ -327,4 +327,5 @@ warning: in the working copy of 'server.js', LF will be replaced by CRLF the nex
 [31m-app.get('/api/licenses', async (req, res) => {[m
 [32m+[m[32m// Status[m
 [32m+[m[32mapp.get('/api/licenses/status', async (req, res) => {[m
-[32m+[m[32m  const { licenseKey, dev
+[32m+[m[32m  const { licenseKey, devwarning: in the working copy of 'server.js', LF will be replaced by CRLF the next time Git touches it
+server.js

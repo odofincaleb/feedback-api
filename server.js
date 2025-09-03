@@ -589,7 +589,8 @@ app.get('/api/analytics/activities', async (req, res) => {
 });
 
 // ===== License Management Endpoints =====
-const GRACE_DAYS = parseInt(process.env.GRACE_DAYS || '7', 10);
+// Grace period for pruning stale devices - matches 15-day validation interval
+const GRACE_DAYS = parseInt(process.env.GRACE_DAYS || '15', 10);
 
 // Get all licenses
 app.get('/api/licenses', async (req, res) => {
@@ -621,7 +622,14 @@ app.get('/api/licenses', async (req, res) => {
       ORDER BY l.created_at DESC
     `);
     
-    res.json(rows);
+    // Add isLifetime flag to each license
+    const licensesWithLifetimeFlag = rows.map(license => ({
+      ...license,
+      isLifetime: license.plan === 'lifetime' || 
+                  (license.expiry_date && new Date(license.expiry_date).getFullYear() > new Date().getFullYear() + 900)
+    }));
+    
+    res.json(licensesWithLifetimeFlag);
   } catch (e) {
     console.error('Get licenses error:', e);
     res.status(500).json({ error: 'internal_error' });
@@ -661,16 +669,25 @@ app.post('/api/licenses', async (req, res) => {
       licenseKey += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     
-    // Calculate expiry date
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + parseInt(licenseDuration));
+    // Handle lifetime licenses (999 years)
+    let finalPlan = plan;
+    let expiryDate = new Date();
+    
+    if (licenseDuration === '999' || licenseDuration === 999) {
+      finalPlan = 'lifetime';
+      // Set expiry date to 999 years in the future
+      expiryDate.setFullYear(expiryDate.getFullYear() + 999);
+    } else {
+      // Calculate expiry date for regular licenses (treat as days)
+      expiryDate.setDate(expiryDate.getDate() + parseInt(licenseDuration));
+    }
     
     // Insert license
     const result = await client.query(`
       INSERT INTO licenses (license_key, email, customer_name, plan, status, max_devices, seats, max_devices_per_user, expiry_date)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
-    `, [licenseKey, customerEmail, customerName || customerEmail, plan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
+    `, [licenseKey, customerEmail, customerName || customerEmail, finalPlan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
     
     const newLicense = result.rows[0];
     
@@ -688,7 +705,8 @@ app.post('/api/licenses', async (req, res) => {
         expiry_date: newLicense.expiry_date,
         created_at: newLicense.created_at,
         active_devices: 0,
-        total_users: 0
+        total_users: 0,
+        isLifetime: finalPlan === 'lifetime'
       }
     });
   } catch (e) {
@@ -1024,18 +1042,24 @@ app.get('/api/licenses/status', async (req, res) => {
   if (!licenseKey) return res.status(400).json({ error: 'licenseKey is required' });
   const client = await db.connect();
   try {
-    const licRows = await client.query(`SELECT max_devices, status, expiry_date FROM licenses WHERE license_key=$1`, [licenseKey]);
+    const licRows = await client.query(`SELECT max_devices, status, expiry_date, plan FROM licenses WHERE license_key=$1`, [licenseKey]);
     if (licRows.rows.length === 0) return res.status(404).json({ valid: false, reason: 'license_not_found' });
     const lic = licRows.rows[0];
     await pruneStaleDevices(client, licenseKey);
     const active = await getActiveDevices(client, licenseKey);
     const thisDeviceActive = deviceId ? active.some(d => d.device_id === deviceId) : false;
     
+    // Check if this is a lifetime license
+    const isLifetime = lic.plan === 'lifetime' || 
+                      (lic.expiry_date && new Date(lic.expiry_date).getFullYear() > new Date().getFullYear() + 900);
+    
     const response = { 
       valid: lic.status === 'active', 
       maxDevices: lic.max_devices, 
       activeDevices: active, 
-      thisDeviceActive 
+      thisDeviceActive,
+      isLifetime,
+      plan: lic.plan
     };
 
     // If userEmail is provided, include user role and permissions
@@ -1199,6 +1223,49 @@ app.get('/api/licenses/migration-status', async (req, res) => {
     }
   } catch (error) {
     console.error('Migration status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Debug endpoint to check database contents
+app.get('/api/debug/database', async (req, res) => {
+  try {
+    const client = await db.connect();
+    try {
+      // Check licenses
+      const licensesResult = await client.query('SELECT COUNT(*) as count FROM licenses');
+      const totalLicenses = parseInt(licensesResult.rows[0].count);
+      
+      // Check license_users
+      const usersResult = await client.query('SELECT COUNT(*) as count FROM license_users WHERE revoked_at IS NULL');
+      const totalUsers = parseInt(usersResult.rows[0].count);
+      
+      // Check license_devices
+      const devicesResult = await client.query('SELECT COUNT(*) as count FROM license_devices WHERE status = \'active\'');
+      const totalDevices = parseInt(devicesResult.rows[0].count);
+      
+      // Get sample data
+      const sampleLicenses = await client.query('SELECT license_key, customer_name, max_devices FROM licenses LIMIT 3');
+      const sampleUsers = await client.query('SELECT license_key, user_email FROM license_users WHERE revoked_at IS NULL LIMIT 3');
+      const sampleDevices = await client.query('SELECT license_key, device_id FROM license_devices WHERE status = \'active\' LIMIT 3');
+      
+      res.json({
+        summary: {
+          totalLicenses,
+          totalUsers,
+          totalDevices
+        },
+        sampleData: {
+          licenses: sampleLicenses.rows,
+          users: sampleUsers.rows,
+          devices: sampleDevices.rows
+        }
+      });
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Debug endpoint error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
