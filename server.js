@@ -214,6 +214,53 @@ const migrateExistingLicenses = async () => {
 // Run migration after a short delay to ensure database is ready
 setTimeout(migrateExistingLicenses, 2000);
 
+// Migration: Update existing licenses to lifetime plan if they have 999+ year expiry
+const migrateLifetimeLicenses = async () => {
+  const client = await db.connect();
+  try {
+    console.log('🔍 Running lifetime license migration...');
+    
+    // Find licenses that were created with 999-year duration but have wrong plan
+    const { rows } = await client.query(`
+      SELECT license_key, email, customer_name, plan, expiry_date, created_at
+      FROM licenses 
+      WHERE plan = 'standard' 
+      AND expiry_date > NOW() + INTERVAL '900 years'
+      ORDER BY created_at DESC
+    `);
+    
+    console.log(`📊 Found ${rows.length} licenses that should be lifetime`);
+    
+    if (rows.length === 0) {
+      console.log('✅ No licenses need lifetime migration');
+      return;
+    }
+    
+    // Update each license to have plan = 'lifetime'
+    for (const license of rows) {
+      console.log(`🔄 Migrating license: ${license.license_key} (${license.email})`);
+      
+      await client.query(`
+        UPDATE licenses 
+        SET plan = 'lifetime', updated_at = NOW()
+        WHERE license_key = $1
+      `, [license.license_key]);
+      
+      console.log(`   ✅ Updated ${license.license_key} to lifetime plan`);
+    }
+    
+    console.log('🎉 Lifetime license migration completed successfully!');
+    
+  } catch (error) {
+    console.error('❌ Lifetime license migration error:', error);
+  } finally {
+    client.release();
+  }
+};
+
+// Run lifetime license migration after a delay
+setTimeout(migrateLifetimeLicenses, 4000);
+
 // S3 Backup Functions
 const backupToS3 = async () => {
   try {
