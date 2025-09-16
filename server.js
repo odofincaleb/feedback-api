@@ -738,6 +738,14 @@ app.get('/api/licenses', async (req, res) => {
 app.post('/api/licenses', async (req, res) => {
   const { customerName, customerEmail, licenseDuration, maxSystems, plan = 'standard' } = req.body || {};
   
+  console.log('🔍 Creating license with data:', {
+    customerName,
+    customerEmail,
+    licenseDuration,
+    maxSystems,
+    plan
+  });
+  
   if (!customerEmail || !licenseDuration || !maxSystems) {
     return res.status(400).json({ error: 'customerEmail, licenseDuration, and maxSystems are required' });
   }
@@ -769,13 +777,22 @@ app.post('/api/licenses', async (req, res) => {
     let finalPlan = plan;
     let expiryDate = new Date();
     
+    console.log('🔍 Calculating expiry date:', {
+      licenseDuration,
+      licenseDurationType: typeof licenseDuration,
+      currentDate: expiryDate.toISOString()
+    });
+    
     if (licenseDuration === '999' || licenseDuration === 999) {
       finalPlan = 'lifetime';
       // Set expiry date to 999 years in the future
       expiryDate.setFullYear(expiryDate.getFullYear() + 999);
+      console.log('🔍 Lifetime license - expiry date set to:', expiryDate.toISOString());
     } else {
       // Calculate expiry date for regular licenses (treat as days)
-      expiryDate.setDate(expiryDate.getDate() + parseInt(licenseDuration));
+      const daysToAdd = parseInt(licenseDuration);
+      expiryDate.setDate(expiryDate.getDate() + daysToAdd);
+      console.log('🔍 Regular license - adding', daysToAdd, 'days, expiry date set to:', expiryDate.toISOString());
     }
     
     // Insert license
@@ -786,6 +803,12 @@ app.post('/api/licenses', async (req, res) => {
     `, [licenseKey, customerEmail, customerName || customerEmail, finalPlan, 'active', parseInt(maxSystems), parseInt(maxSystems), 1, expiryDate]);
     
     const newLicense = result.rows[0];
+    
+    console.log('🔍 License created successfully:', {
+      license_key: newLicense.license_key,
+      expiry_date: newLicense.expiry_date,
+      plan: newLicense.plan
+    });
     
     res.json({
       success: true,
